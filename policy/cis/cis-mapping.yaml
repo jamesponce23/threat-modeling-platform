@@ -1,0 +1,63 @@
+mapping_version: "1.1.0"
+
+# CIS Amazon Web Services Foundations Benchmark v3.0.0 (January 2024) and
+# CIS Microsoft Azure Foundations Benchmark v2.1.0 (January 2024).
+#
+# Control numbers are quoted from those two documents, not computed, and they
+# change between benchmark versions - S3 encryption-at-rest was a control in
+# AWS v1.4 and is gone from v3.0 because SSE-S3 became the default; Azure's
+# logging section moved from 5.x to 6.x in v3.0. That is why mapping_version
+# is recorded on every scan.
+#
+# `null` is deliberate: it means "this finding is real but no control in the
+# named benchmark version says so". The coverage report counts those rather
+# than pretending.
+controls:
+  estate.storage.public_access:
+    aws: "CIS AWS 2.1.4"
+    azure: "CIS Azure 3.17"
+    title: "Ensure that storage is not anonymously accessible"
+  estate.storage.access_unknown:
+    aws: "CIS AWS 2.1.4"
+    azure: "CIS Azure 3.17"
+    title: "Public-access settings could not be verified - fix scanner permissions"
+  estate.storage.unencrypted:
+    aws: null          # removed in v3.0.0 - SSE-S3 is on by default since 2023
+    azure: null        # Azure Storage is always encrypted at rest
+    title: "Ensure encryption at rest is enabled"
+  estate.storage.tls_not_enforced:
+    aws: "CIS AWS 2.1.1"
+    azure: "CIS Azure 3.1"
+    title: "Ensure secure transport is required"
+  estate.network.open_ingress:
+    aws: "CIS AWS 5.2"
+    azure: "CIS Azure 6.1"
+    title: "Ensure no security group allows ingress from 0.0.0.0/0 to remote administration ports"
+  estate.identity.wildcard_permissions:
+    aws: "CIS AWS 1.16"
+    azure: null        # CIS Azure 1.22 covers custom admin roles, not Owner assignments
+    title: "Ensure no policy grants full administrative privileges"
+  estate.identity.role_trusts_any_principal:
+    aws: null          # no CIS control names an open trust policy
+    azure: null
+    title: "Ensure roles cannot be assumed by arbitrary principals"
+  estate.database.public_access:
+    aws: "CIS AWS 2.3.3"
+    azure: "CIS Azure 4.1.2"
+    title: "Ensure database instances are not publicly accessible"
+  estate.database.unencrypted:
+    aws: "CIS AWS 2.3.1"
+    azure: "CIS Azure 4.1.5"
+    title: "Ensure database encryption at rest is enabled"
+  estate.audit.trail_not_multi_region:
+    aws: "CIS AWS 3.1"
+    azure: null        # the Activity Log is subscription-wide; nothing to be per-region about
+    title: "Ensure audit logging covers all regions"
+  estate.audit.trail_not_logging:
+    aws: "CIS AWS 3.1"
+    azure: "CIS Azure 5.1.1"
+    title: "Ensure the audit trail is actually logging"
+  estate.audit.no_trail:
+    aws: "CIS AWS 3.1"
+    azure: "CIS Azure 5.1.1"
+    title: "Ensure an audit trail exists"

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Threat Model & Project Risk Platform{% endblock %}</title>
+  {% block head %}{% endblock %}
+  <style>
+    :root { color-scheme: light dark; --fg:#1a1a1a; --bg:#fbfbfa; --muted:#666; --line:#d8d8d4; --accent:#1f5f8b; }
+    @media (prefers-color-scheme: dark) { :root { --fg:#e8e8e6; --bg:#1b1b1a; --muted:#9a9a96; --line:#3a3a38; --accent:#7fb2d6; } }
+    * { box-sizing: border-box; }
+    body { margin:0; font:16px/1.55 system-ui, -apple-system, Segoe UI, sans-serif; color:var(--fg); background:var(--bg); }
+    header { border-bottom:1px solid var(--line); padding:14px 24px; display:flex; gap:20px; align-items:baseline; }
+    header a { color:var(--accent); text-decoration:none; }
+    header .spacer { flex:1; }
+    header .who { color:var(--muted); font-size:13px; }
+    main { max-width:780px; margin:0 auto; padding:28px 24px 64px; }
+    h1 { font-size:22px; margin:0 0 6px; }
+    p.lede { color:var(--muted); margin:0 0 26px; }
+    fieldset { border:1px solid var(--line); border-radius:6px; margin:0 0 18px; padding:14px 16px; }
+    legend { font-weight:600; padding:0 6px; }
+    label.opt { display:block; padding:3px 0; font-weight:400; }
+    label.field { display:block; font-weight:600; margin:14px 0 4px; }
+    input[type=text], input[type=email], input[type=url], input[type=file] {
+      width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:4px;
+      background:var(--bg); color:var(--fg); font:inherit; }
+    button { font:inherit; padding:9px 18px; border:1px solid var(--accent); border-radius:4px;
+             background:var(--accent); color:#fff; cursor:pointer; }
+    button.link { background:none; color:var(--accent); border:none; padding:0; }
+    table { border-collapse:collapse; width:100%; }
+    th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); }
+    th { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+    .errors { border:1px solid #b3261e; background:#b3261e14; border-radius:6px; padding:12px 16px; margin-bottom:20px; }
+    .errors ul { margin:6px 0 0; padding-left:20px; }
+    .badge { display:inline-block; padding:2px 10px; border-radius:20px; font-size:13px;
+             border:1px solid var(--line); color:var(--muted); }
+    .req { color:#b3261e; }
+    .hint { color:var(--muted); font-size:13px; margin:4px 0 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/"><strong>Threat Model &amp; Project Risk</strong></a>
+    <a href="/submit">Submit a project</a>
+    <a href="/estate">Cloud estate</a>
+    <span class="spacer"></span>
+    {% if user %}<span class="who">{{ user }}</span>
+    <form method="post" action="/logout" style="display:inline"><button class="link" type="submit">sign out</button></form>{% endif %}
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+</body>
+</html>

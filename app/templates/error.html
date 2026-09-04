@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}{{ status }} — {{ heading }}{% endblock %}
+{% block content %}
+<h1>{{ status }} — {{ heading }}</h1>
+<p class="lede">{{ detail }}</p>
+<p><a href="/">Project list</a> &nbsp;·&nbsp; <a href="/submit">Submit a project</a></p>
+{% endblock %}

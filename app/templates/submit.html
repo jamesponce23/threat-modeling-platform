@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Submit a project{% endblock %}
+{% block content %}
+<h1>Submit a project for review</h1>
+<p class="lede">Every question is required. A partially answered questionnaire is not
+scoreable — B5 would read the gaps as zeros and under-rate the project.</p>
+
+{% if errors %}
+<div class="errors"><strong>Fix the following:</strong>
+  <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<form method="post" action="/submit" enctype="multipart/form-data">
+  <fieldset>
+    <legend>The project</legend>
+    <label class="field" for="project_name">Project name <span class="req">*</span></label>
+    <input type="text" id="project_name" name="project_name" required
+           value="{{ form.get('project_name', '') }}">
+
+    <label class="field" for="owner_email">Owner email <span class="req">*</span></label>
+    <input type="email" id="owner_email" name="owner_email" required
+           value="{{ form.get('owner_email', '') }}">
+
+    <label class="field" for="repo_url">Repository URL</label>
+    <input type="url" id="repo_url" name="repo_url" value="{{ form.get('repo_url', '') }}">
+    <p class="hint">Provide a repository URL <strong>or</strong> an archive below — one, not both.</p>
+
+    <label class="field" for="ref">Branch / ref</label>
+    <input type="text" id="ref" name="ref" value="{{ form.get('ref', '') or 'main' }}">
+
+    <label class="field" for="archive">Or upload an archive</label>
+    <input type="file" id="archive" name="archive" accept=".zip,.tar,.tar.gz,.tgz">
+  </fieldset>
+
+  {% for q in questions %}
+  <fieldset>
+    <legend>{{ loop.index }}. {{ q.text }} <span class="req">*</span></legend>
+    {% for opt in q.options %}
+    <label class="opt">
+      <input type="radio" name="{{ q.key }}" value="{{ opt.value }}" required
+             {% if form.get(q.key) == opt.value %}checked{% endif %}>
+      {{ opt.label }}
+    </label>
+    {% endfor %}
+  </fieldset>
+  {% endfor %}
+
+  <button type="submit">Submit for review</button>
+</form>
+{% endblock %}

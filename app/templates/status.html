@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Submission #{{ submission.id }}{% endblock %}
+{% block head %}
+{% if submission.status not in ('complete', 'failed') %}
+<meta http-equiv="refresh" content="5">
+{% endif %}
+{% endblock %}
+{% block content %}
+<h1>Submission #{{ submission.id }} — {{ project.name }}</h1>
+<p class="lede">
+  {% if submission.status in ('complete', 'failed') %}
+    Finished. This page has stopped refreshing.
+  {% else %}
+    Refreshing every 5 seconds off <code>submission.status</code>.
+  {% endif %}
+</p>
+
+<table>
+  <tr><th>Status</th><td><span class="badge">{{ submission.status }}</span></td></tr>
+  <tr><th>Source</th><td>{{ submission.source_type }}</td></tr>
+  <tr><th>Ref</th><td>{{ submission.ref or '—' }}</td></tr>
+  <tr><th>Commit</th><td>{{ submission.commit_sha or '—' }}</td></tr>
+  <tr><th>Submitted</th><td>{{ submission.submitted_at.strftime('%Y-%m-%d %H:%M:%S %Z') }}</td></tr>
+  <tr><th>Owner</th><td>{{ project.owner_email }}</td></tr>
+</table>
+
+{% if submission.status == 'failed' and submission.error %}
+<div class="errors" style="margin-top:22px"><strong>Failed:</strong><pre style="white-space:pre-wrap">{{ submission.error }}</pre></div>
+{% endif %}
+
+{% if submission.status == 'complete' %}
+<p style="margin-top:22px"><a href="/rating/{{ submission.id }}">View the risk rating →</a></p>
+{% elif submission.status == 'queued' %}
+<p class="hint" style="margin-top:22px">
+  The job is queued in Redis. Nothing consumes that queue until the worker
+  exists (section 7), so this stays at <code>queued</code> for now — that is the
+  expected end state of section 4, not a failure.
+</p>
+{% endif %}
+{% endblock %}

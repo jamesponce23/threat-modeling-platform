@@ -1,0 +1,32 @@
+# Secrets and local environment
+.env
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Runtime working directories
+workspaces/
+reports/
+
+# Terraform state and local vars
+terraform/**/.terraform/
+terraform/**/*.tfstate*
+terraform/**/*.tfvars
+
+# Local server logs / pids
+uvicorn.log
+uvicorn.pid
+rqworker.log
+rqworker.pid
+
+# Personal working notes and account-specific setup — local only.
+# The two READMEs are the published documentation; everything else here
+# records this operator's own accounts, findings and build history.
+questions.md
+issues_&_fixes.md
+how-it-works.md
+aws-identity-setup.md
+azure-identity-setup.md

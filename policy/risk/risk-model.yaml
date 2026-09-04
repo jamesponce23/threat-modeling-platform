@@ -1,0 +1,49 @@
+model_version: "1.0.0"
+
+inherent:
+  weights:
+    data_classification: 3
+    internet_exposure:   3
+    authentication:      2
+    blast_radius:        2
+    compliance_scope:    2
+    third_party:         1
+  max_raw: 65
+
+technical:
+  points:
+    critical: 10
+    high:      4
+    medium:    1
+    low:       0
+  caps:
+    critical_total: 20
+    high_total:     12
+    medium_total:    5
+  extra:
+    verified_secret:        15
+    iac_critical_misconfig:  8
+    iac_misconfig_cap:      16
+    scope_mismatch:         10
+  max_total: 35
+
+thresholds:
+  low_max:    34
+  medium_max: 64
+
+hard_overrides:
+  - id: regulated_public
+    when: "data_classification == 'regulated' and internet_exposure == 'public_unauth'"
+    tier: HIGH
+  - id: live_secret
+    when: "verified_secret_count > 0"
+    tier: HIGH
+  - id: reachable_critical_cve
+    when: "critical_cve_on_internet_facing_entrypoint"
+    tier: HIGH
+  - id: control_plane_access
+    when: "blast_radius == 'control_plane'"
+    tier: HIGH
+  - id: undeclared_public_exposure
+    when: "scope_mismatch_public_exposure"
+    tier: HIGH

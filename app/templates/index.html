@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Projects{% endblock %}
+{% block content %}
+<h1>Projects</h1>
+<p class="lede">Every project registered for review, newest first.</p>
+{% if projects %}
+<table>
+  <tr><th>Project</th><th>Owner</th><th>Latest submission</th><th>Status</th></tr>
+  {% for p in projects %}
+  {% set s = latest[p.id] %}
+  <tr>
+    <td>{{ p.name }}{% if p.repo_url %}<div class="hint">{{ p.repo_url }}</div>{% endif %}</td>
+    <td>{{ p.owner_email }}</td>
+    <td>{% if s %}<a href="/status/{{ s.id }}">#{{ s.id }}</a>
+        <div class="hint">{{ s.submitted_at.strftime('%Y-%m-%d %H:%M') }}</div>{% else %}—{% endif %}</td>
+    <td>{% if s %}<span class="badge">{{ s.status }}</span>{% else %}—{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p>No projects yet. <a href="/submit">Submit the first one.</a></p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}{{ executive.source.display_name }}{% endblock %}
+{% block head %}{% if refreshing %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
+{% block content %}
+{% set src = executive.source %}
+<h1>{{ src.display_name }}</h1>
+<p class="lede">{{ src.provider }} · {{ src.account_identifier }}
+  {% if executive.scan %}· last scan <span class="badge">{{ executive.scan.status }}</span>
+  <span class="hint">{{ executive.scan.started_at.strftime('%Y-%m-%d %H:%M') }}</span>{% endif %}
+  {% if refreshing %}· refreshing every 5 seconds{% endif %}</p>
+
+{% if executive.scan and executive.scan.error %}
+<div class="errors"><strong>Last scan failed:</strong><pre style="white-space:pre-wrap">{{ executive.scan.error }}</pre></div>
+{% endif %}
+
+<form method="post" action="/estate/{{ src.id }}/scan" style="margin-bottom:24px">
+  <button type="submit"{% if refreshing %} disabled{% endif %}>Run a scan now</button>
+</form>
+
+<h2>Executive summary</h2>
+<table>
+  <tr><th>Critical</th><td>{{ executive.counts.critical }}</td></tr>
+  <tr><th>High</th><td>{{ executive.counts.high }}</td></tr>
+  <tr><th>Medium</th><td>{{ executive.counts.medium }}</td></tr>
+  <tr><th>Low</th><td>{{ executive.counts.low }}</td></tr>
+  <tr><th>Total</th><td><strong>{{ executive.total }}</strong></td></tr>
+  <tr><th>Resources</th><td>{{ executive.scan.resource_count if executive.scan and executive.scan.resource_count is not none else '—' }}</td></tr>
+  <tr><th>CIS coverage</th><td>{{ executive.cis_coverage_percent }}% of findings map to a control
+      {% if executive.unmapped %}<div class="hint">unmapped: {{ executive.unmapped | join(', ') }}</div>{% endif %}</td></tr>
+</table>
+
+{% if executive.top_rules %}
+<h2 style="margin-top:28px">Most frequent findings</h2>
+<table>
+  <tr><th>Rule</th><th>Count</th></tr>
+  {% for rule_id, count in executive.top_rules %}
+  <tr><td><code>{{ rule_id }}</code></td><td>{{ count }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2 style="margin-top:28px">Risk report: rated vs. observed</h2>
+{% if risk.divergences %}
+<div class="errors">
+  <strong>{{ risk.divergences | length }} project(s) rated LOW or MEDIUM by Track B have internet-exposed resources deployed under their tag.</strong>
+  <table style="margin-top:10px">
+    <tr><th>Project</th><th>Rated</th><th>Exposed resources</th></tr>
+    {% for d in risk.divergences %}
+    <tr>
+      <td>{{ d.project }}{% if d.submission_id %}<div class="hint"><a href="/rating/{{ d.submission_id }}">rating #{{ d.submission_id }}</a></div>{% endif %}</td>
+      <td><span class="badge">{{ d.rated_tier }}</span> <span class="hint">{{ d.rated_total_score }} / 100</span></td>
+      <td>{{ d.exposed_count }}<div class="hint">{{ d.exposed_resources | join('<br>') | safe }}</div></td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% elif risk.scan %}
+<p class="hint">No divergence: no project rated LOW or MEDIUM has an exposed resource attributed to it.</p>
+{% else %}
+<p class="hint">No scan yet.</p>
+{% endif %}
+
+{% if risk.attribution %}
+<table style="margin-top:12px">
+  <tr><th>Resources scanned</th><td>{{ risk.attribution.total }}</td></tr>
+  <tr><th>Attributed to a Track B project</th><td>
+    {% if risk.attribution.attributed %}{% for name, n in risk.attribution.attributed.items() %}{{ name }} ({{ n }}){% if not loop.last %}, {% endif %}{% endfor %}{% else %}none{% endif %}</td></tr>
+  <tr><th>Tagged with an unknown project</th><td>
+    {% if risk.attribution.unknown_project_tags %}{% for name, n in risk.attribution.unknown_project_tags.items() %}{{ name }} ({{ n }}){% if not loop.last %}, {% endif %}{% endfor %}{% else %}none{% endif %}</td></tr>
+  <tr><th>Unattributable (no project tag)</th><td>{{ risk.attribution.unattributed }}
+    {% if risk.attribution.total and risk.attribution.unattributed == risk.attribution.total %}<div class="hint">Nothing in this estate is tagged, so nothing can be correlated to a rating. That is a finding about the estate.</div>{% endif %}</td></tr>
+</table>
+{% endif %}
+
+{% if risk.warnings %}
+<h2 style="margin-top:28px">Scan warnings ({{ risk.warnings | length }})</h2>
+<p class="hint">What the scanner could not read or map. A permission denied here means the finding list below is incomplete, not clean.</p>
+<ul>{% for w in risk.warnings[:30] %}<li class="hint">{{ w }}</li>{% endfor %}</ul>
+{% if risk.warnings | length > 30 %}<p class="hint">… {{ risk.warnings | length - 30 }} more in the JSON API.</p>{% endif %}
+{% endif %}
+
+<h2 style="margin-top:28px">Technical detail</h2>
+{% if technical.findings %}
+<table>
+  <tr><th>Severity</th><th>Rule</th><th>Finding</th><th>CIS control</th></tr>
+  {% for f in technical.findings %}
+  <tr>
+    <td>{{ f.severity }}</td>
+    <td><code>{{ f.rule_id }}</code></td>
+    <td>{{ f.title }}<div class="hint">{{ f.evidence }}</div></td>
+    <td>{{ f.cis_control or '—' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="hint">No findings stored for this source yet. Run a scan.</p>
+{% endif %}
+{% endblock %}

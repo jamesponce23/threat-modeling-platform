@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Rating — {{ project.name }}{% endblock %}
+{% block content %}
+{% set tier_colors = {'LOW': '#1b8a5a', 'MEDIUM': '#b8860b', 'HIGH': '#b3261e'} %}
+{% set tier_color = tier_colors.get(assessment.tier, '#666') %}
+<h1>{{ project.name }} — submission #{{ submission.id }}</h1>
+<p class="lede">Rated against model version <code>{{ assessment.model_version }}</code>.</p>
+
+<div style="display:inline-block; padding:8px 22px; border-radius:8px; font-size:20px;
+            font-weight:700; color:#fff; background:{{ tier_color }}; margin-bottom:22px;">
+  {{ assessment.tier }}
+</div>
+
+<table>
+  <tr><th>Inherent score</th><td>{{ assessment.inherent_score }} / 65</td></tr>
+  <tr><th>Technical score</th><td>{{ assessment.technical_score }} / 35</td></tr>
+  <tr><th>Total score</th><td><strong>{{ assessment.total_score }}</strong> / 100</td></tr>
+</table>
+
+{% if assessment.overrides_fired %}
+<h2 style="margin-top:28px">Hard overrides fired</h2>
+<p class="hint">These forced the tier to {{ assessment.tier }} regardless of the score above.</p>
+<ul>{% for o in assessment.overrides_fired %}<li><code>{{ o }}</code></li>{% endfor %}</ul>
+{% endif %}
+
+<h2 style="margin-top:28px">Top drivers</h2>
+<table>
+  <tr><th>Factor</th><th>Points</th><th>Evidence</th></tr>
+  {% for d in assessment.drivers %}
+  <tr><td>{{ d.factor }}</td><td>{{ d.points }}</td><td>{{ d.evidence }}</td></tr>
+  {% endfor %}
+</table>
+
+<h2 style="margin-top:28px">Findings</h2>
+{% if findings %}
+<table>
+  <tr><th>Scanner</th><th>Severity</th><th>Title</th><th>Location</th></tr>
+  {% for f in findings %}
+  <tr>
+    <td>{{ f.scanner }}</td>
+    <td>{{ f.severity }}</td>
+    <td>{{ f.title }}</td>
+    <td>{% if f.file_path %}{{ f.file_path }}{% if f.line %}:{{ f.line }}{% endif %}{% else %}—{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="hint">No findings from any scanner.</p>
+{% endif %}
+
+<h2 style="margin-top:28px">Gate decision</h2>
+<p><span class="badge">{{ gate.decision }}</span></p>
+<p class="lede" style="margin-bottom:8px">Required before production:</p>
+<ul>{% for c in gate.required_controls %}<li>{{ c }}</li>{% endfor %}</ul>
+
+<p style="margin-top:28px">
+  <a href="/reports/{{ submission.id }}.pdf">Download PDF report</a>
+  {% if has_sbom %} · <a href="/reports/{{ submission.id }}/sbom.json">Download SBOM (CycloneDX)</a>{% endif %}
+</p>
+{% endblock %}

@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Cloud estate{% endblock %}
+{% block head %}{% if refreshing %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
+{% block content %}
+<h1>Cloud estate</h1>
+<p class="lede">Track A: accounts and subscriptions already running, scanned in place.
+{% if refreshing %}A scan is running; this page refreshes every 5 seconds.{% endif %}</p>
+
+{% if rows %}
+<table>
+  <tr><th>Source</th><th>Account</th><th>Last scan</th><th>Critical</th><th>High</th><th>Total</th><th>Divergences</th></tr>
+  {% for row in rows %}
+  <tr>
+    <td><a href="/estate/{{ row.source.id }}">{{ row.source.display_name }}</a>
+        <div class="hint">{{ row.source.provider }}</div></td>
+    <td>{{ row.source.account_identifier }}</td>
+    <td>{% if row.scan %}<span class="badge">{{ row.scan.status }}</span>
+        <div class="hint">{{ row.scan.started_at.strftime('%Y-%m-%d %H:%M') }}</div>
+        {% else %}<span class="hint">never</span>{% endif %}</td>
+    <td>{{ row.critical }}</td>
+    <td>{{ row.high }}</td>
+    <td>{{ row.total }}</td>
+    <td>{% if row.divergences %}<strong class="req">{{ row.divergences }}</strong>{% else %}0{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p>No sources registered yet.</p>
+{% endif %}
+
+<h2 style="margin-top:32px">Register a source</h2>
+<form method="post" action="/estate/sources">
+  <fieldset>
+    <legend>New account or subscription</legend>
+    <label class="field" for="provider">Provider</label>
+    <select id="provider" name="provider" style="padding:8px 10px">
+      <option value="aws">AWS account</option>
+      <option value="azure">Azure subscription</option>
+    </select>
+    <label class="field" for="account_identifier">Account / subscription id</label>
+    <input type="text" id="account_identifier" name="account_identifier" required>
+    <p class="hint">Must match what the worker's credentials resolve to (<code>aws sts get-caller-identity</code> / <code>az account show</code>) - a scan against any other account is refused.</p>
+    <label class="field" for="display_name">Display name</label>
+    <input type="text" id="display_name" name="display_name" required>
+  </fieldset>
+  <button type="submit">Register</button>
+</form>
+{% endblock %}
