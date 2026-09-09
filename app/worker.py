@@ -78,27 +78,50 @@ def _fetch_source(db: Session, submission: Submission, upload: Path | None) -> P
     return workspace.source_path(submission.id)
 
 
-def _run_scanners(model: ProjectModel | None, source: Path) -> tuple[list[Finding], dict[str, str]]:
-    """Run every applicable scanner in parallel. Returns findings and failures.
+def _run_scanners(
+    model: ProjectModel | None, source: Path
+) -> tuple[list[Finding], dict[str, str], list[str]]:
+    """Run every applicable scanner in parallel.
+
+    Returns (findings, failures, warnings).
 
     A scanner that fails is recorded, not swallowed: 'no findings' and 'the
-    tool never ran' must never look the same to whoever reads the report.
+    tool never ran' must never look the same to whoever reads the report. The
+    same goes for the quieter version of that — a tool that ran, exited 0, and
+    skipped a file it could not parse. Those arrive as `ScanOutcome.warnings`
+    and are kept alongside the outright failures, because both mean the same
+    thing to a reader: this scan covered less than it looks like it did.
+
+    A scanner that was not applicable to this project is not a gap and is not
+    reported; a scanner that was applicable and produced nothing usable is.
     """
     applicable = [s for s in SCANNERS if s.applicable(model)]
+    skipped = [s.name for s in SCANNERS if s not in applicable]
     findings: list[Finding] = []
     failures: dict[str, str] = {}
+    warnings: list[str] = []
 
     with ThreadPoolExecutor(max_workers=len(applicable) or 1) as pool:
         futures = {pool.submit(s.run, source): s for s in applicable}
         for future, scanner in futures.items():
             try:
-                findings.extend(future.result())
+                outcome = future.result()
             except ScannerError as exc:
                 failures[scanner.name] = str(exc)
             except Exception as exc:  # a broken adapter must not kill the run
                 failures[scanner.name] = f"{type(exc).__name__}: {exc}"
+            else:
+                findings.extend(outcome.findings)
+                warnings.extend(outcome.warnings)
 
-    return findings, failures
+    for name, message in failures.items():
+        warnings.append(f"{name}: DID NOT RUN — {message}")
+    if skipped:
+        warnings.append(
+            f"not applicable to this project, so not run: {', '.join(sorted(skipped))}"
+        )
+
+    return findings, failures, warnings
 
 
 def _store_findings(db: Session, submission_id: int, findings: list[Finding]) -> int:
@@ -182,11 +205,21 @@ def run_scan(submission_id: int) -> dict:
             summary["scope_mismatches"] = [m["key"] for m in (model.scope_mismatches or [])]
 
             _set_status(db, submission, "scanning")
-            findings, failures = _run_scanners(model, source)
+            findings, failures, warnings = _run_scanners(model, source)
             summary["findings"] = _store_findings(db, submission_id, findings)
             summary["scanner_failures"] = failures
 
-            summary["sbom_error"] = _generate_sbom(submission_id, source)
+            sbom_error = _generate_sbom(submission_id, source)
+            summary["sbom_error"] = sbom_error
+            if sbom_error:
+                warnings.append(f"sbom: not generated — {sbom_error}")
+
+            # Persisted, not just returned: the RQ result expires in 500
+            # seconds and is rendered nowhere, so a gap recorded only there is
+            # a gap nobody will ever see. Mirrors estate_scan.warnings.
+            submission.warnings = warnings[:200]
+            summary["warnings"] = len(warnings)
+            db.commit()
 
             _set_status(db, submission, "classifying")
             answers = project_model.declared_scope(db, submission_id)

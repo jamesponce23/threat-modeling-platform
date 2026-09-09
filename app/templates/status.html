@@ -28,6 +28,13 @@
 <div class="errors" style="margin-top:22px"><strong>Failed:</strong><pre style="white-space:pre-wrap">{{ submission.error }}</pre></div>
 {% endif %}
 
+{% if submission.warnings %}
+<div class="errors" style="margin-top:22px">
+  <strong>{{ submission.warnings | length }} scan coverage warning(s):</strong>
+  <ul style="margin-bottom:0">{% for w in submission.warnings[:15] %}<li class="hint">{{ w }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
 {% if submission.status == 'complete' %}
 <p style="margin-top:22px"><a href="/rating/{{ submission.id }}">View the risk rating →</a></p>
 {% elif submission.status == 'queued' %}

@@ -85,6 +85,11 @@ class Submission(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     error: Mapped[str | None] = mapped_column(Text)
+    # What the scan could not look at, while still succeeding: a scanner that
+    # failed outright, a file semgrep or checkov could not parse, an SBOM that
+    # was not written. Every one of those makes the technical score lower, so
+    # a rating with warnings is a rating that has been read too generously.
+    warnings: Mapped[list | dict | None] = mapped_column(JSONB)
 
     project: Mapped["Project"] = relationship(back_populates="submissions")
 

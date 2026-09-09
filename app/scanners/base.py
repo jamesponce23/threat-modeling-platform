@@ -8,8 +8,9 @@ normalised here so that B5 never sees a scanner's private vocabulary.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -93,13 +94,33 @@ class Finding:
         return asdict(self)
 
 
+@dataclass
+class ScanOutcome:
+    """What one scanner produced: its findings, and what it could not look at.
+
+    `warnings` exists because the dangerous scanner result is not a crash — a
+    crash is recorded. It is a tool that exits 0 having quietly skipped part of
+    the repository: semgrep emits `PartialParsing` for a file it cannot parse
+    and still exits 0, and checkov counts `parsing_errors` in its summary and
+    still reports on everything else. Those files contribute no findings, so
+    they make the technical score *lower* and the tier *better*. A warning is
+    the only thing standing between that and a clean-looking report.
+
+    Warnings are not findings. They say "this scan covered less than it looks
+    like it did", which is a statement about the scan, not about the code.
+    """
+
+    findings: list[Finding] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
 @runtime_checkable
 class Scanner(Protocol):
     name: str
 
     def applicable(self, model: ProjectModel | None) -> bool: ...
 
-    def run(self, workspace: Path) -> list[Finding]: ...
+    def run(self, workspace: Path) -> ScanOutcome: ...
 
 
 class ScannerError(RuntimeError):
@@ -143,6 +164,41 @@ def run_tool(command: list[str], cwd: Path, *, ok_codes: frozenset[int] = FINDIN
             f"{command[0]} exited {result.returncode}: {detail[-1] if detail else 'no output'}"
         )
     return result
+
+
+# Log levels that mean "something went wrong" in the five tools' own output.
+# Gitleaks writes `WRN`, trivy `ERROR`/`WARN`, both to stderr, both while
+# exiting 0. Anything matching becomes a scan warning; the routine INF/DEBUG
+# chatter does not.
+_LOG_PROBLEM = re.compile(r"\b(ERR|ERRO|ERROR|WRN|WARN|WARNING|FATAL)\b", re.IGNORECASE)
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def stderr_warnings(scanner: str, result, limit: int = 10, ignore: tuple[str, ...] = ()) -> list[str]:
+    """Problems a tool logged on stderr despite exiting successfully.
+
+    Not everything on stderr: these tools log routine progress there too, so
+    only lines carrying a warning or error level are kept. A tool that exits 0
+    while logging `WRN could not read …` has scanned less than it appears to.
+
+    `ignore` drops substrings that a tool logs at warning level as part of
+    working correctly — gitleaks announces `WRN leaks found: 2`, which is the
+    scanner succeeding, not a gap in coverage. Warning about a successful
+    detection would put a line on every report that finds anything, and a
+    warning that fires routinely is one nobody reads.
+    """
+    lines = [_ANSI.sub("", line).strip() for line in (result.stderr or "").splitlines()]
+    problems = [
+        line for line in lines
+        if line and _LOG_PROBLEM.search(line) and not any(skip in line for skip in ignore)
+    ]
+    # dict.fromkeys: drop repeats (one unreadable directory logs per file) but
+    # keep the order they were emitted in.
+    unique = list(dict.fromkeys(problems))
+    kept = [f"{scanner}: {line[:300]}" for line in unique[:limit]]
+    if len(unique) > limit:
+        kept.append(f"{scanner}: … and {len(unique) - limit} more log lines at warning level or worse")
+    return kept
 
 
 def load_report(path: Path) -> dict | list:

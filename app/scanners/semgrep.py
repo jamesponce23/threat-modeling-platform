@@ -6,7 +6,14 @@ import json
 from pathlib import Path
 
 from app.models import ProjectModel
-from app.scanners.base import Finding, ScannerError, infer_stride, normalize_severity, run_tool
+from app.scanners.base import (
+    Finding,
+    ScanOutcome,
+    ScannerError,
+    infer_stride,
+    normalize_severity,
+    run_tool,
+)
 
 # Registry rulesets. These are fetched over the network on first use and then
 # cached, so an offline worker fails here rather than silently scanning with
@@ -20,7 +27,7 @@ class SemgrepScanner:
     def applicable(self, model: ProjectModel | None) -> bool:
         return bool(model is None or model.languages)
 
-    def run(self, workspace: Path) -> list[Finding]:
+    def run(self, workspace: Path) -> ScanOutcome:
         command = ["semgrep", "--json", "--quiet", "--no-git-ignore",
                    "--metrics", "off", "--disable-version-check"]
         for ruleset in RULESETS:
@@ -56,7 +63,33 @@ class SemgrepScanner:
                     cis_control=_first(metadata.get("cis")),
                 )
             )
-        return findings
+        return ScanOutcome(findings=findings, warnings=_parse_warnings(data))
+
+
+
+def _parse_warnings(data: dict) -> list[str]:
+    """Files semgrep could not analyse, from its own `errors` array.
+
+    Semgrep reports an unparseable file as a `PartialParsing` error and still
+    **exits 0**. The file yields no findings, so the technical score drops and
+    the tier improves — a syntax error in the one interesting file reads as a
+    clean scan of it. `run_tool` cannot catch this: the exit code is 0 because
+    semgrep did its job on everything else.
+    """
+    warnings: list[str] = []
+    for error in data.get("errors") or []:
+        if not isinstance(error, dict):
+            continue
+        kind = error.get("type")
+        # `type` arrives as a bare string or as [name, [locations…]].
+        if isinstance(kind, list):
+            kind = kind[0] if kind else "error"
+        path = error.get("path") or ((error.get("spans") or [{}])[0] or {}).get("file") or "?"
+        level = error.get("level") or "warn"
+        message = " ".join(str(error.get("message") or "").split())[:200]
+        warnings.append(f"semgrep: {level} {kind} in {path}: {message}")
+    # dict.fromkeys: one unparseable file can produce several identical entries.
+    return list(dict.fromkeys(warnings))[:20]
 
 
 def _first(value) -> str | None:

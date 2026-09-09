@@ -6,7 +6,15 @@ import tempfile
 from pathlib import Path
 
 from app.models import ProjectModel
-from app.scanners.base import Finding, ScannerError, load_report, run_tool, normalize_severity
+from app.scanners.base import (
+    Finding,
+    ScanOutcome,
+    ScannerError,
+    load_report,
+    normalize_severity,
+    run_tool,
+    stderr_warnings,
+)
 
 
 class GitleaksScanner:
@@ -15,13 +23,13 @@ class GitleaksScanner:
     def applicable(self, model: ProjectModel | None) -> bool:
         return True  # every repository can leak a secret
 
-    def run(self, workspace: Path) -> list[Finding]:
+    def run(self, workspace: Path) -> ScanOutcome:
         with tempfile.TemporaryDirectory() as tmp:
             report = Path(tmp) / "gitleaks.json"
             # `gitleaks detect` was deprecated in v8.19.0. `dir` is the current
             # filesystem scan and the direct replacement for `detect --no-git`;
             # B2 clones --depth 1 so there is no history worth walking anyway.
-            run_tool(
+            result = run_tool(
                 ["gitleaks", "dir", ".", "--report-format", "json",
                  "--report-path", str(report), "--no-banner", "--redact"],
                 cwd=workspace,
@@ -48,4 +56,4 @@ class GitleaksScanner:
                     stride="I",  # a leaked credential is information disclosure
                 )
             )
-        return findings
+        return ScanOutcome(findings=findings, warnings=stderr_warnings(self.name, result, ignore=("leaks found",)))

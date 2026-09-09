@@ -31,6 +31,16 @@
   {% endfor %}
 </table>
 
+{% if submission.warnings %}
+<h2 style="margin-top:28px">Scan coverage warnings ({{ submission.warnings | length }})</h2>
+<div class="errors">
+  <strong>This scan covered less than it looks like it did.</strong>
+  <p class="hint" style="margin:6px 0 0">Every line below is something a scanner could not read or check. Each one can only push the technical score <em>down</em> and the tier <em>better</em>, so read this rating as a floor, not a verdict.</p>
+  <ul style="margin-bottom:0">{% for w in submission.warnings[:30] %}<li class="hint">{{ w }}</li>{% endfor %}</ul>
+  {% if submission.warnings | length > 30 %}<p class="hint" style="margin-bottom:0">… {{ submission.warnings | length - 30 }} more in the JSON API.</p>{% endif %}
+</div>
+{% endif %}
+
 <h2 style="margin-top:28px">Findings</h2>
 {% if findings %}
 <table>

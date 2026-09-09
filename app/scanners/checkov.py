@@ -6,7 +6,14 @@ import json
 from pathlib import Path
 
 from app.models import ProjectModel
-from app.scanners.base import Finding, ScannerError, infer_stride, normalize_severity, run_tool
+from app.scanners.base import (
+    Finding,
+    ScanOutcome,
+    ScannerError,
+    infer_stride,
+    normalize_severity,
+    run_tool,
+)
 
 
 class CheckovScanner:
@@ -16,7 +23,7 @@ class CheckovScanner:
         # Only worth running when B2 actually found infrastructure code.
         return bool(model is None or model.iac_files)
 
-    def run(self, workspace: Path) -> list[Finding]:
+    def run(self, workspace: Path) -> ScanOutcome:
         result = run_tool(
             ["checkov", "-d", ".", "--framework", "terraform,cloudformation,kubernetes,dockerfile",
              "-o", "json", "--compact", "--quiet"],
@@ -31,9 +38,20 @@ class CheckovScanner:
         reports = data if isinstance(data, list) else [data]
 
         findings = []
+        warnings: list[str] = []
         for report in reports:
             if not isinstance(report, dict):
                 continue
+            # `--compact` gives a count, not the file names: checkov parsed
+            # this many files and gave up on them, then reported cleanly on
+            # the rest. Those files produce no failed checks, which is
+            # indistinguishable from compliant infrastructure.
+            skipped = (report.get("summary") or {}).get("parsing_errors") or 0
+            if skipped:
+                warnings.append(
+                    f"checkov: {skipped} {report.get('check_type') or 'unknown'} "
+                    f"file(s) could not be parsed and were not checked"
+                )
             for check in (report.get("results") or {}).get("failed_checks", []):
                 rule_id = check.get("check_id") or "checkov.unknown"
                 title = check.get("check_name") or rule_id
@@ -50,7 +68,7 @@ class CheckovScanner:
                         cis_control=_cis_from_guideline(check.get("guideline")),
                     )
                 )
-        return findings
+        return ScanOutcome(findings=findings, warnings=warnings)
 
 
 def _cis_from_guideline(guideline: str | None) -> str | None:

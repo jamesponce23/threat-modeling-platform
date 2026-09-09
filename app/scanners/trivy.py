@@ -6,7 +6,15 @@ import tempfile
 from pathlib import Path
 
 from app.models import ProjectModel
-from app.scanners.base import Finding, infer_stride, load_report, normalize_severity, run_tool
+from app.scanners.base import (
+    Finding,
+    ScanOutcome,
+    infer_stride,
+    load_report,
+    normalize_severity,
+    run_tool,
+    stderr_warnings,
+)
 
 
 class TrivyScanner:
@@ -15,10 +23,10 @@ class TrivyScanner:
     def applicable(self, model: ProjectModel | None) -> bool:
         return True
 
-    def run(self, workspace: Path) -> list[Finding]:
+    def run(self, workspace: Path) -> ScanOutcome:
         with tempfile.TemporaryDirectory() as tmp:
             report = Path(tmp) / "trivy.json"
-            run_tool(
+            completed = run_tool(
                 ["trivy", "fs", "--scanners", "vuln,misconfig,license",
                  "--format", "json", "--output", str(report), "--quiet", "."],
                 cwd=workspace,
@@ -73,4 +81,4 @@ class TrivyScanner:
                         stride=None,  # a licence problem is legal, not STRIDE
                     )
                 )
-        return findings
+        return ScanOutcome(findings=findings, warnings=stderr_warnings(self.name, completed))

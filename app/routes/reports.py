@@ -71,11 +71,14 @@ def api_rating(
     db: Session = Depends(get_db),
     client: str = Depends(require_api_client),
 ):
-    _, assessment, gate_decision = _load(db, submission_id)
+    submission, assessment, gate_decision = _load(db, submission_id)
     return {
         "submission_id": submission_id,
         "tier": assessment.tier,
         "gate": gate_decision.decision,
+        # A CI client deciding on the tier has to be able to see that the scan
+        # behind it was incomplete, or the gate is trusting a floor as a fact.
+        "scan_warnings": submission.warnings or [],
         "inherent_score": assessment.inherent_score,
         "technical_score": assessment.technical_score,
         "total_score": assessment.total_score,
