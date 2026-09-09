@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.analysis.rules import evidence_for
 from app.models import Finding as FindingRow
 from app.models import Project, RiskAssessment, Submission
+from app.normalize import schema
 from app.normalize.schema import Resource
 from app.scanners.base import Finding
 
@@ -71,21 +72,57 @@ def store(db: Session, source_id: int, findings: list[Finding]) -> int:
 def attribute(resources: list[Resource]) -> tuple[dict[str, list[Resource]], list[Resource]]:
     """Split resources by their `project` tag. Returns (by_project, untagged).
 
+    Grouping is by `schema.project_key`, not by the raw tag, so one project
+    tagged in two spellings ("Payments", "payments", "pay-ments") is one group
+    rather than three - three groups would each be matched against the project
+    registry separately and all but one would be reported as naming no known
+    project. The group is labelled with the first spelling seen, so the report
+    still shows an operator the string that is actually on their resources.
+
     Untagged resources are returned, not discarded: an estate where nothing is
     tagged cannot be correlated at all, and that is a finding about the estate,
     not a reason to report success.
     """
-    by_project: dict[str, list[Resource]] = defaultdict(list)
+    by_key: dict[str, list[Resource]] = defaultdict(list)
+    labels: dict[str, str] = {}
     untagged: list[Resource] = []
 
     for resource in resources:
         tag = resource.project_tag()
-        if tag:
-            by_project[tag].append(resource)
-        else:
+        if not tag:
             untagged.append(resource)
+            continue
+        key = schema.project_key(tag)
+        labels.setdefault(key, tag)
+        by_key[key].append(resource)
 
-    return dict(by_project), untagged
+    return {labels[key]: items for key, items in by_key.items()}, untagged
+
+
+def _project_index(db: Session) -> tuple[dict[str, Project], set[str]]:
+    """Every registered project, keyed for comparison against a tag value.
+
+    Two projects whose names differ only in case or separators cannot be told
+    apart by a tag, so neither is matched: the key is dropped from the index
+    and returned as ambiguous. Attributing to whichever row happened to be
+    created first would silently hang one team's exposure on another's rating.
+    """
+    index: dict[str, Project] = {}
+    ambiguous: set[str] = set()
+
+    for project in db.scalars(select(Project).order_by(Project.id)).all():
+        key = schema.project_key(project.name)
+        if not key:
+            continue
+        if key in index:
+            ambiguous.add(key)
+            continue
+        index[key] = project
+
+    for key in ambiguous:
+        index.pop(key, None)
+
+    return index, ambiguous
 
 
 def attribution_summary(db: Session, resources: list[Resource]) -> dict:
@@ -94,14 +131,25 @@ def attribution_summary(db: Session, resources: list[Resource]) -> dict:
     Stored on the scan row so the estate page can say how much of the estate
     the correlation loop can even see."""
     by_project, untagged = attribute(resources)
-    known = {
-        name for name in by_project
-        if db.scalar(select(Project.id).where(Project.name == name)) is not None
-    }
+    index, ambiguous = _project_index(db)
+
+    attributed: dict[str, int] = {}
+    unknown: dict[str, int] = {}
+    contested: dict[str, int] = {}
+    for label, items in by_project.items():
+        key = schema.project_key(label)
+        if key in ambiguous:
+            contested[label] = len(items)
+        elif key in index:
+            attributed[label] = len(items)
+        else:
+            unknown[label] = len(items)
+
     return {
         "total": len(resources),
-        "attributed": {name: len(items) for name, items in by_project.items() if name in known},
-        "unknown_project_tags": {name: len(items) for name, items in by_project.items() if name not in known},
+        "attributed": attributed,
+        "unknown_project_tags": unknown,
+        "ambiguous_project_tags": contested,
         "unattributed": len(untagged),
     }
 
@@ -113,6 +161,7 @@ def correlate(db: Session, resources: list[Resource], findings: list[Finding]) -
     least one internet-exposed resource deployed under its tag.
     """
     by_project, _ = attribute(resources)
+    index, _ambiguous = _project_index(db)
 
     # Which resource ids are implicated in an exposure finding.
     exposed_evidence = {
@@ -120,10 +169,11 @@ def correlate(db: Session, resources: list[Resource], findings: list[Finding]) -
     }
 
     divergences: list[dict] = []
-    for project_name, project_resources in by_project.items():
-        project = db.scalar(select(Project).where(Project.name == project_name))
+    for tag_label, project_resources in by_project.items():
+        project = index.get(schema.project_key(tag_label))
         if project is None:
             continue
+        project_name = project.name
 
         assessment = _latest_assessment(db, project.id)
         if assessment is None or assessment.tier not in LOW_RISK_TIERS:
@@ -139,6 +189,7 @@ def correlate(db: Session, resources: list[Resource], findings: list[Finding]) -
         divergences.append(
             {
                 "project": project_name,
+                "project_tag": tag_label,
                 "project_id": project.id,
                 "submission_id": assessment.submission_id,
                 "rated_tier": assessment.tier,

@@ -66,7 +66,13 @@
   <tr><th>Attributed to a Track B project</th><td>
     {% if risk.attribution.attributed %}{% for name, n in risk.attribution.attributed.items() %}{{ name }} ({{ n }}){% if not loop.last %}, {% endif %}{% endfor %}{% else %}none{% endif %}</td></tr>
   <tr><th>Tagged with an unknown project</th><td>
-    {% if risk.attribution.unknown_project_tags %}{% for name, n in risk.attribution.unknown_project_tags.items() %}{{ name }} ({{ n }}){% if not loop.last %}, {% endif %}{% endfor %}{% else %}none{% endif %}</td></tr>
+    {% if risk.attribution.unknown_project_tags %}{% for name, n in risk.attribution.unknown_project_tags.items() %}{{ name }} ({{ n }}){% if not loop.last %}, {% endif %}{% endfor %}
+    <div class="hint">The tag is compared to the project name ignoring case and separators, so <code>payments-api</code> matches "Payments API". A tag listed here matches no registered project at all — either a typo, or a project nobody has submitted to Track B.</div>
+    {% else %}none{% endif %}</td></tr>
+  <tr><th>Tagged ambiguously</th><td>
+    {% if risk.attribution.ambiguous_project_tags %}{% for name, n in risk.attribution.ambiguous_project_tags.items() %}{{ name }} ({{ n }}){% if not loop.last %}, {% endif %}{% endfor %}
+    <div class="hint">Two or more registered projects have names this tag cannot tell apart. Neither is credited — rename one project so the tag is unambiguous.</div>
+    {% else %}none{% endif %}</td></tr>
   <tr><th>Unattributable (no project tag)</th><td>{{ risk.attribution.unattributed }}
     {% if risk.attribution.total and risk.attribution.unattributed == risk.attribution.total %}<div class="hint">Nothing in this estate is tagged, so nothing can be correlated to a rating. That is a finding about the estate.</div>{% endif %}</td></tr>
 </table>

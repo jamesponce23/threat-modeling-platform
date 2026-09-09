@@ -71,3 +71,38 @@ def test_only_reassuring_tiers_can_diverge():
     what is actually deployed."""
     assert set(store.LOW_RISK_TIERS) == {"LOW", "MEDIUM"}
     assert "HIGH" not in store.LOW_RISK_TIERS
+
+
+def test_one_project_tagged_in_two_spellings_is_one_group():
+    """The join is normalised, so a Terraform-style slug and a console-typed
+    name are the same project. Grouped separately, all but one spelling would
+    be reported as naming no known project — indistinguishable, in the report,
+    from an estate nobody has tagged."""
+    by_project, _ = store.attribute([
+        _bucket("a", {"project": "Payments API"}),
+        _bucket("b", {"project": "payments-api"}),
+        _bucket("c", {"Project": "Payments_API"}),
+    ])
+    assert len(by_project) == 1
+    # Labelled with the spelling actually on the first resource, so the report
+    # shows the operator the string that is on their estate.
+    assert list(by_project) == ["Payments API"]
+    assert len(by_project["Payments API"]) == 3
+
+
+def test_normalisation_does_not_merge_genuinely_different_names():
+    """Separator and case folding only. Anything fuzzier would attribute a
+    resource to the wrong project, which is worse than not attributing it."""
+    by_project, _ = store.attribute([
+        _bucket("a", {"project": "payments api"}),
+        _bucket("b", {"project": "paymentsapi"}),
+        _bucket("c", {"project": "payments api prod"}),
+    ])
+    assert len(by_project) == 3
+
+
+def test_project_key_is_the_documented_normalisation():
+    assert schema.project_key("Payments API") == schema.project_key("payments-api")
+    assert schema.project_key(" Payments ") == "payments"
+    assert schema.project_key(None) == ""
+    assert schema.project_key("payments api") != schema.project_key("paymentsapi")

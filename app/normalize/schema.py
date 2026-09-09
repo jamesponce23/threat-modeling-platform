@@ -19,6 +19,7 @@ treats None as "safe" would turn every missing permission into a clean report.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 # Canonical resource types. Deliberately coarse: the analysis engine cares
@@ -58,6 +59,31 @@ CANONICAL_PROPERTIES = (
 
 # The tag key used to attribute a live resource back to a Track B project.
 PROJECT_TAG_KEYS = ("project", "Project", "PROJECT", "app", "Application")
+
+# Separators that carry no meaning in a project name. A console-typed tag is
+# "Payments API"; the same project tagged from Terraform is almost always
+# "payments-api". They are the same project, and an exact string join
+# silently reports the second one as belonging to no known project - silently,
+# because an unmatched tag looks exactly like an untagged estate in the report.
+_TAG_SEPARATORS = re.compile(r"[\s_\-.]+")
+
+
+def project_key(value: str | None) -> str:
+    """The comparison form of a project name or a `project` tag value.
+
+    Case and separator style are dropped; word boundaries are kept, so
+    "Payments API", "payments-api" and "Payments_API" all compare equal,
+    while "payments api" and "paymentsapi" stay distinct - two
+    projects whose names differ only by a space are still two projects.
+
+    Matching is deliberately not fuzzier than this. A substring or
+    edit-distance match would attribute a resource to the wrong project, and a
+    wrong attribution is worse than no attribution: it puts someone else's
+    exposure on your rating.
+    """
+    if not value:
+        return ""
+    return _TAG_SEPARATORS.sub(" ", str(value).strip().casefold()).strip()
 
 # Ports whose exposure to the internet CIS calls out by name (AWS 5.2/5.3,
 # Azure 6.1/6.2): remote administration. Everything else open to the world is

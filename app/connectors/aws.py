@@ -303,6 +303,7 @@ class AwsConnector:
                             "wildcard_permissions": wildcards,
                             "privileged_scope": "account" if wildcards else None,
                         },
+                        tags=self._policy_tags(client, policy["Arn"]),
                     )
                 )
 
@@ -321,10 +322,58 @@ class AwsConnector:
                             "public_access": _role_trusts_everyone(trust),
                             "privileged_scope": "account",
                         },
-                        tags={t["Key"]: t["Value"] for t in role.get("Tags", [])},
+                        # ListRoles does not return tags - IAM's list
+                        # operations return a subset of each object's
+                        # attributes, and `role.get("Tags")` here is always
+                        # absent. Read them per role instead. See
+                        # _role_tags for why that is worth the extra calls.
+                        tags=self._role_tags(client, role["RoleName"]),
                     )
                 )
         return resources
+
+    def _role_tags(self, client, role_name: str) -> dict:
+        """Tags on one IAM role, paginated.
+
+        One extra API call per role. That is the price of attributing a role
+        to a project at all: a role that trusts any principal is one of the
+        four exposure rules the correlation loop acts on, so a role that
+        cannot carry a project tag is an exposure that can never raise a
+        divergence - and nothing anywhere would say so.
+        """
+        tags: dict = {}
+        marker = None
+        try:
+            while True:
+                kwargs = {"RoleName": role_name}
+                if marker:
+                    kwargs["Marker"] = marker
+                page = client.list_role_tags(**kwargs)
+                tags.update({t["Key"]: t["Value"] for t in page.get("Tags", [])})
+                if not page.get("IsTruncated"):
+                    break
+                marker = page.get("Marker")
+        except Exception as exc:  # noqa: BLE001
+            self._record(f"iam list_role_tags {role_name}", exc)
+        return tags
+
+    def _policy_tags(self, client, policy_arn: str) -> dict:
+        """Tags on one customer-managed policy. ListPolicies omits them too."""
+        tags: dict = {}
+        marker = None
+        try:
+            while True:
+                kwargs = {"PolicyArn": policy_arn}
+                if marker:
+                    kwargs["Marker"] = marker
+                page = client.list_policy_tags(**kwargs)
+                tags.update({t["Key"]: t["Value"] for t in page.get("Tags", [])})
+                if not page.get("IsTruncated"):
+                    break
+                marker = page.get("Marker")
+        except Exception as exc:  # noqa: BLE001
+            self._record(f"iam list_policy_tags {policy_arn}", exc)
+        return tags
 
     def _policy_wildcards(self, client, policy: dict) -> list[str]:
         try:
@@ -395,9 +444,23 @@ class AwsConnector:
                         "logging_enabled": logging_enabled,
                         "encrypted_at_rest": bool(trail.get("KmsKeyId")),
                     },
+                    tags=self._trail_tags(client, arn),
                 )
             )
         return resources
+
+
+    def _trail_tags(self, client, arn: str) -> dict:
+        """Tags on one trail. describe_trails does not carry them either."""
+        try:
+            entries = client.list_tags(ResourceIdList=[arn]).get("ResourceTagList", [])
+        except Exception as exc:  # noqa: BLE001
+            self._record(f"cloudtrail list_tags {arn}", exc)
+            return {}
+        for entry in entries:
+            if entry.get("ResourceId") == arn:
+                return {t["Key"]: t.get("Value", "") for t in entry.get("TagsList", [])}
+        return {}
 
 
 def _role_trusts_everyone(trust_policy: dict) -> bool:
