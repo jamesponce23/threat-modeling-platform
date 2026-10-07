@@ -2,8 +2,8 @@
 
 A security platform that rates risk from two directions. Its two halves feed the same findings store:
 
-- **Track B: new project intake.** A team submits a project before it ships. The platform clones the code, works out what the system actually is, scans it with four security tools, and rates it **LOW / MEDIUM / HIGH** with a gate decision that CI can enforce.
 - **Track A: existing cloud estate.** The platform scans AWS accounts and Azure subscriptions that are already running, using read-only access. It normalizes their configuration into one cloud-neutral shape, runs misconfiguration and STRIDE analysis, and maps every finding to a CIS Foundations control.
+- **Track B: new project intake.** A team submits a project before it ships. The platform clones the code, works out what the system actually is, scans it with four security tools, and rates it **LOW / MEDIUM / HIGH** with a gate decision that CI can enforce.
 
 The two tracks share a normalization schema, a `finding` table, a policy library and a reporting layer. The reason for building both is the **correlation loop**. If a project was rated LOW at intake and later shows up in a scanned cloud account as a public bucket tagged with that project's name, the platform reports the mismatch. Neither track can see that divergence on its own.
 
@@ -14,8 +14,8 @@ Architecture diagram: [`docs/threat-model-platform.drawio`](docs/threat-model-pl
 ## Contents
 
 1. [How it fits together](#how-it-fits-together)
-2. [Track B: project intake and risk rating](#track-b-project-intake-and-risk-rating)
-3. [Track A: cloud estate scanning](#track-a-cloud-estate-scanning)
+2. [Track A: cloud estate scanning](#track-a-cloud-estate-scanning)
+3. [Track B: project intake and risk rating](#track-b-project-intake-and-risk-rating)
 4. [The correlation loop](#the-correlation-loop)
 5. [Risk model](#risk-model)
 6. [Design principles](#design-principles)
@@ -30,6 +30,13 @@ Architecture diagram: [`docs/threat-model-platform.drawio`](docs/threat-model-pl
 
 ```mermaid
 flowchart LR
+    subgraph A["Track A: running cloud"]
+        A1["1 Connectors<br/>AWS · Azure (read-only)"] --> A3["3 Canonical resource shape"]
+        A2["2 IaC parser<br/>Terraform"] --> A3
+        A3 --> A4["4 Misconfig + STRIDE rules"]
+        A4 --> A5["5 CIS mapping"]
+    end
+
     subgraph B["Track B: new project"]
         B1["B1 Intake portal<br/>form · JSON API · webhook"] --> B2["B2 Code ingestion<br/>sandboxed clone / archive"]
         B2 --> B3["B3 Scoping engine<br/>entry points · trust boundaries"]
@@ -38,21 +45,78 @@ flowchart LR
         B5 --> B7["B7 Rating report<br/>tier · drivers · gate"]
     end
 
-    subgraph A["Track A: running cloud"]
-        A1["1 Connectors<br/>AWS · Azure (read-only)"] --> A3["3 Canonical resource shape"]
-        A2["2 IaC parser<br/>Terraform"] --> A3
-        A3 --> A4["4 Misconfig + STRIDE rules"]
-        A4 --> A5["5 CIS mapping"]
-    end
-
-    B4 --> F[("finding table<br/>shared store")]
-    A5 --> F
+    A5 --> F[("finding table<br/>shared store")]
+    B4 --> F
     F --> A6["6 Persist · dedup · correlate"]
     A6 --> A7["7 Technical / executive / risk reports"]
     B5 -. "rated tier" .-> A6
 ```
 
-Both tracks run on one FastAPI application, one Postgres database, one Redis queue and one RQ worker. A code finding and a cloud misconfiguration have the same `Finding` shape, with the same severity vocabulary and STRIDE tags, and they land in the same table. Each `finding` row carries either a `submission_id` (Track B) or a `source_id` (Track A). A check constraint requires one of the two, so a finding can always be traced to where it came from.
+Both tracks run on one FastAPI application, one Postgres database, one Redis queue and one RQ worker. A code finding and a cloud misconfiguration have the same `Finding` shape, with the same severity vocabulary and STRIDE tags, and they land in the same table. Each `finding` row carries either a `source_id` (Track A) or a `submission_id` (Track B). A check constraint requires one of the two, so a finding can always be traced to where it came from.
+
+---
+
+## Track A: cloud estate scanning
+
+Track A rates infrastructure that is already running, pointed at live AWS accounts and Azure subscriptions. Track B (below) rates code that has not shipped yet, and both feed the same pipeline. Its stages are numbered by pipeline position. They were written in dependency order, starting with stage 3, because every other stage emits stage 3's canonical shape.
+
+### Stage 1: Connectors (read-only)
+
+| Cloud | Collects | Identity |
+| --- | --- | --- |
+| **AWS** | S3, security groups, IAM roles and policies, RDS, CloudTrail (per region, deduplicated, with live logging status) | An assumed role with the AWS-managed `SecurityAudit` policy. No new access key. |
+| **Azure** | Storage accounts, NSGs, SQL servers, role assignments, Activity Log diagnostic settings | A service principal with the **Reader** role at subscription scope, using **certificate auth**, so no client secret is stored |
+
+The connectors are read-only in two different ways:
+
+- **AWS is read-only at runtime.** A boto3 `before-call` hook rejects any operation that is not a `List`/`Describe`/`Get` before a request is even built (`refusing to call 'DeleteBucket'…`). STS credential exchange is the one allowed exception, because the read-only role cannot be assumed without it.
+- **Azure is read-only by review.** The Azure SDK has no equivalent hook, so the connector's five `list`/`get` calls are read-only by code review. That makes a least-privilege identity more important on Azure, not less.
+
+**Denied permissions are reported as unknown, not guessed.** An early version treated any bucket it could not read as public. Against a real account, that produced false critical findings that buried the real ones. A property the scanner cannot read is now `None`, the denial is recorded as a scan warning, and a dedicated rule (`estate.storage.access_unknown`) says plainly that the bucket could not be checked.
+
+The worker also refuses to file a scan under a source whose account or subscription id differs from the one its credentials actually resolve to. Without that check, a misconfigured profile could silently mislabel an entire scan.
+
+### Stage 2: IaC parser
+
+The parser turns Terraform into the same `Resource` shape the live connectors emit, so one rule engine can judge both a bucket that exists and a bucket that is only declared. It handles the way modern Terraform is actually written. Bucket posture lives in **companion resources** (`aws_s3_bucket_public_access_block`, `aws_s3_bucket_acl`, `aws_security_group_rule`, `azurerm_network_security_rule`…), which the parser collects across the whole tree and merges onto the resources they configure. A parser that only read inline blocks would rate every current module as clean. The parser also handles both the old and new output formats of `python-hcl2`.
+
+### Stage 3: Canonical resource shape
+
+This is the cloud-neutral model. An S3 bucket and an Azure storage account both reach the analysis engine as `storage.bucket` with the same property keys, so each rule is written once, not once per cloud. The model has eight resource types, kept coarse on purpose, because the engine cares what a resource does, not what a vendor calls it.
+
+Boolean properties are **three-valued**: `True`, `False`, or `None` for "could not read". Rules test `is True` / `is False` and never rely on truthiness, so a missing permission is never counted as clean or as broken. Shared helpers answer "is this IAM policy a wildcard grant?" and "how bad is this open port?" in one place, so the live connector and the Terraform parser always agree.
+
+### Stage 4: Misconfiguration and STRIDE analysis
+
+Eleven per-resource rules, plus an account-level check for a missing audit trail. Each one emits the same `Finding` that Track B's scanners emit:
+
+| Area | Rules |
+| --- | --- |
+| Storage | Public access · access could not be verified · unencrypted · TLS not enforced |
+| Network | Open to the internet, **graded by port**: admin ports (22, 3389) or all ports open is critical; 443 is medium |
+| Identity | Wildcard permissions · role trusts any principal · (Azure) Owner/Contributor/User Access Administrator at subscription scope |
+| Database | Publicly accessible · unencrypted |
+| Audit | Trail not multi-region · trail exists but is not logging · no audit trail at all |
+
+Grading by port matters. An early version called every open port critical, and on a real estate that made "critical" meaningless.
+
+### Stage 5: CIS Foundations mapping
+
+The control mapping is a versioned policy file ([`policy/cis/cis-mapping.yaml`](policy/cis/cis-mapping.yaml)) mapping each rule to **CIS AWS Foundations v3.0.0** and **CIS Azure Foundations v2.1.0**. Every control number was checked against the published benchmarks, and five of the first draft's numbers were wrong and got corrected. A rule that is a real finding but has no control in that benchmark version maps to `null`. The report counts those as unmapped and does not invent a citation. Each scan records the mapping version it used.
+
+### Stage 6: Risk store: persist, dedup, correlate
+
+Track A rescans the same accounts repeatedly, so the store is **idempotent**: a bucket that has been public for six months is one finding, not 180. This stage also holds the attribution and correlation logic that drives the [correlation loop](#the-correlation-loop).
+
+### Stage 7: Reports
+
+One query layer serves three audiences:
+
+- **Technical**: every finding with its resource, severity, STRIDE category and CIS control
+- **Executive**: counts by severity and the worst items
+- **Risk**: the correlation loop. It shows rated vs. observed divergences, how much of the estate is attributable to a Track B project, and the scan warnings.
+
+Warnings, attribution and divergences are stored on the `estate_scan` row, so the report still exists after the job that computed it has finished. Scans move through `queued → collecting → analyzing → storing → complete`.
 
 ---
 
@@ -143,70 +207,6 @@ CI reads `{"tier": "...", "gate": "approved|conditional|blocked"}` from the JSON
 
 ---
 
-## Track A: cloud estate scanning
-
-Track B rates code that has not shipped yet. Track A rates infrastructure that is already running. It is a second way into the same pipeline, pointed at live AWS accounts and Azure subscriptions. Its stages are numbered by pipeline position. They were written in dependency order, starting with stage 3, because every other stage emits stage 3's canonical shape.
-
-### Stage 1: Connectors (read-only)
-
-| Cloud | Collects | Identity |
-| --- | --- | --- |
-| **AWS** | S3, security groups, IAM roles and policies, RDS, CloudTrail (per region, deduplicated, with live logging status) | An assumed role with the AWS-managed `SecurityAudit` policy. No new access key. |
-| **Azure** | Storage accounts, NSGs, SQL servers, role assignments, Activity Log diagnostic settings | A service principal with the **Reader** role at subscription scope, using **certificate auth**, so no client secret is stored |
-
-The connectors are read-only in two different ways:
-
-- **AWS is read-only at runtime.** A boto3 `before-call` hook rejects any operation that is not a `List`/`Describe`/`Get` before a request is even built (`refusing to call 'DeleteBucket'…`). STS credential exchange is the one allowed exception, because the read-only role cannot be assumed without it.
-- **Azure is read-only by review.** The Azure SDK has no equivalent hook, so the connector's five `list`/`get` calls are read-only by code review. That makes a least-privilege identity more important on Azure, not less.
-
-**Denied permissions are reported as unknown, not guessed.** An early version treated any bucket it could not read as public. Against a real account, that produced false critical findings that buried the real ones. A property the scanner cannot read is now `None`, the denial is recorded as a scan warning, and a dedicated rule (`estate.storage.access_unknown`) says plainly that the bucket could not be checked.
-
-The worker also refuses to file a scan under a source whose account or subscription id differs from the one its credentials actually resolve to. Without that check, a misconfigured profile could silently mislabel an entire scan.
-
-### Stage 2: IaC parser
-
-The parser turns Terraform into the same `Resource` shape the live connectors emit, so one rule engine can judge both a bucket that exists and a bucket that is only declared. It handles the way modern Terraform is actually written. Bucket posture lives in **companion resources** (`aws_s3_bucket_public_access_block`, `aws_s3_bucket_acl`, `aws_security_group_rule`, `azurerm_network_security_rule`…), which the parser collects across the whole tree and merges onto the resources they configure. A parser that only read inline blocks would rate every current module as clean. The parser also handles both the old and new output formats of `python-hcl2`.
-
-### Stage 3: Canonical resource shape
-
-This is the cloud-neutral model. An S3 bucket and an Azure storage account both reach the analysis engine as `storage.bucket` with the same property keys, so each rule is written once, not once per cloud. The model has eight resource types, kept coarse on purpose, because the engine cares what a resource does, not what a vendor calls it.
-
-Boolean properties are **three-valued**: `True`, `False`, or `None` for "could not read". Rules test `is True` / `is False` and never rely on truthiness, so a missing permission is never counted as clean or as broken. Shared helpers answer "is this IAM policy a wildcard grant?" and "how bad is this open port?" in one place, so the live connector and the Terraform parser always agree.
-
-### Stage 4: Misconfiguration and STRIDE analysis
-
-Eleven per-resource rules, plus an account-level check for a missing audit trail. Each one emits the same `Finding` that Track B's scanners emit:
-
-| Area | Rules |
-| --- | --- |
-| Storage | Public access · access could not be verified · unencrypted · TLS not enforced |
-| Network | Open to the internet, **graded by port**: admin ports (22, 3389) or all ports open is critical; 443 is medium |
-| Identity | Wildcard permissions · role trusts any principal · (Azure) Owner/Contributor/User Access Administrator at subscription scope |
-| Database | Publicly accessible · unencrypted |
-| Audit | Trail not multi-region · trail exists but is not logging · no audit trail at all |
-
-Grading by port matters. An early version called every open port critical, and on a real estate that made "critical" meaningless.
-
-### Stage 5: CIS Foundations mapping
-
-The control mapping is a versioned policy file ([`policy/cis/cis-mapping.yaml`](policy/cis/cis-mapping.yaml)) mapping each rule to **CIS AWS Foundations v3.0.0** and **CIS Azure Foundations v2.1.0**. Every control number was checked against the published benchmarks, and five of the first draft's numbers were wrong and got corrected. A rule that is a real finding but has no control in that benchmark version maps to `null`. The report counts those as unmapped and does not invent a citation. Each scan records the mapping version it used.
-
-### Stage 6: Risk store: persist, dedup, correlate
-
-Track A rescans the same accounts repeatedly, so the store is **idempotent**: a bucket that has been public for six months is one finding, not 180. This stage also holds the attribution and correlation logic that drives the [correlation loop](#the-correlation-loop).
-
-### Stage 7: Reports
-
-One query layer serves three audiences:
-
-- **Technical**: every finding with its resource, severity, STRIDE category and CIS control
-- **Executive**: counts by severity and the worst items
-- **Risk**: the correlation loop. It shows rated vs. observed divergences, how much of the estate is attributable to a Track B project, and the scan warnings.
-
-Warnings, attribution and divergences are stored on the `estate_scan` row, so the report still exists after the job that computed it has finished. Scans move through `queued → collecting → analyzing → storing → complete`.
-
----
-
 ## The correlation loop
 
 > A team submits a project through Track B and answers "internal only, confidential data". It is rated **LOW** and the gate says **approved**. Three months later, Track A scans the account where the project was deployed and finds a storage bucket with public access, tagged `project=<that project>`.
@@ -284,9 +284,9 @@ These choices recur across both tracks. Each one prevents a specific way of prod
 
 | Concern | Control |
 | --- | --- |
+| Cloud blast radius | Read-only identities; runtime write guard on AWS; account-identity check before a scan is filed |
 | Untrusted code execution | No hooks, no submodules, no prompts; archive extraction rejects traversal, links and bombs; per-job `0700` sandbox, always destroyed |
 | Resource exhaustion | Repo size cap and clone timeout |
-| Cloud blast radius | Read-only identities; runtime write guard on AWS; account-identity check before a scan is filed |
 | Policy injection | Override conditions are mapped to Python predicates, never `eval`'d |
 | Portal access | Session cookie (OIDC when configured) for browsers, bearer token for the API, HMAC for webhooks. Signatures are verified before parsing. |
 | Secrets | `.env` is gitignored, placeholder secrets are rotated before first run, and cloud credentials are kept outside the repository |
@@ -296,34 +296,34 @@ These choices recur across both tracks. Each one prevents a specific way of prod
 
 ## Tech stack and layout
 
-**Python · FastAPI · Jinja2 · SQLAlchemy 2 + Alembic · PostgreSQL 16 (JSONB) · Redis 7 + RQ · boto3 · Azure SDK + `azure-identity` · python-hcl2 · ReportLab · pytest**
+**Python · boto3 · Azure SDK + `azure-identity` · python-hcl2 · FastAPI · Jinja2 · SQLAlchemy 2 + Alembic · PostgreSQL 16 (JSONB) · Redis 7 + RQ · ReportLab · pytest**
 Scanners: **Semgrep · Gitleaks · Trivy · Checkov**
 
 ```
 app/
-  routes/        projects (intake), webhooks, reports (rating/PDF/SBOM), estate
-  ingestion/     workspace sandbox, git fetch, archive unpack, detection        (B2)
-  scoping/       questionnaire, project model builder, trust boundaries        (B1/B3)
-  scanners/      base contract + semgrep, gitleaks, trivy, checkov, sbom       (B4)
-  risk/          classifier, overrides, gate                                   (B5/B7)
+  routes/        estate, projects (intake), webhooks, reports (rating/PDF/SBOM)
   connectors/    read-only base, aws, azure                                    (A1)
   normalize/     canonical schema, Terraform parser                            (A2/A3)
   analysis/      misconfiguration + STRIDE rules                               (A4)
   cis/           CIS control mapping                                           (A5)
   findings/      persist, dedup, attribute, correlate                          (A6)
   reporting/     estate reports                                                (A7)
-  worker.py      Track B pipeline job
+  ingestion/     workspace sandbox, git fetch, archive unpack, detection        (B2)
+  scoping/       questionnaire, project model builder, trust boundaries        (B1/B3)
+  scanners/      base contract + semgrep, gitleaks, trivy, checkov, sbom       (B4)
+  risk/          classifier, overrides, gate                                   (B5/B7)
   estate_worker.py  Track A scan job
+  worker.py      Track B pipeline job
 policy/
-  risk/risk-model.yaml   weights, thresholds, overrides
   cis/cis-mapping.yaml   rule → CIS AWS v3.0.0 / Azure v2.1.0
+  risk/risk-model.yaml   weights, thresholds, overrides
 migrations/      Alembic history shared by both tracks
 tests/           pytest suite
 docs/            architecture diagram (draw.io + PDF)
 Evidence/        redacted screenshots of the running platform
 ```
 
-**Data model:** `project`, `submission`, `questionnaire_response`, `project_model`, `risk_assessment` and `gate_decision` (Track B); `source` and `estate_scan` (Track A); and the shared `finding` table.
+**Data model:** `source` and `estate_scan` (Track A); `project`, `submission`, `questionnaire_response`, `project_model`, `risk_assessment` and `gate_decision` (Track B); and the shared `finding` table.
 
 ---
 
@@ -331,13 +331,13 @@ Evidence/        redacted screenshots of the running platform
 
 The pytest suite has **120 passing tests** ([screenshot](Evidence/Pytest.png)). Coverage includes:
 
+- Track A rules, CIS mapping, connector tag handling, the read-only guard, and database-backed correlation tests that roll back every row they write
 - **Risk scoring.** The tests include the floor, the ceiling (asserting on the score as well as the tier, since two overrides would otherwise hide a broken weighted sum), the exact **34 → LOW / 35 → MEDIUM** boundary, and the case where a LOW score plus a live secret must rate HIGH.
 - Questionnaire validation, scoping rules and declared-vs-observed mismatches
 - Scanner contract behaviour: exit codes, stderr filtering, and fake scanners that fail, crash, warn, or don't apply, each of which must say something different on the report
-- Track A rules, CIS mapping, connector tag handling, the read-only guard, and database-backed correlation tests that roll back every row they write
 - Authentication gates
 
-Deliberately broken fixtures cover what the tests cannot. A **dirty** fixture checks that every scanner fires, and an **unparseable** fixture checks that coverage warnings appear. Both connectors have also been run read-only against a real AWS account and a real Azure subscription.
+Deliberately broken fixtures cover what the tests cannot. Both cloud connectors have been run read-only against a real AWS account and a real Azure subscription. On the Track B side, a **dirty** fixture checks that every scanner fires, and an **unparseable** fixture checks that coverage warnings appear.
 
 ---
 
@@ -345,10 +345,6 @@ Deliberately broken fixtures cover what the tests cannot. A **dirty** fixture ch
 
 | Not yet covered | Notes |
 | --- | --- |
-| **Production identity provider** | OIDC is supported in code; the local build runs the development sign-in gate |
-| **Scanner sandboxing** | Scanners and connectors run in-process on the dev box. In production each scanner should run in a throwaway container (`--network none`, read-only mount) and the worker pool should run in an isolated identity with no inbound access |
-| **Platform infrastructure as code** | Planned Terraform modules: network, data, compute (API and workers separated), identity, secrets, storage. The plan is also to scan the platform's own Terraform with the platform. |
-| **IaC join between the tracks** | `app/normalize/iac.py` exists, but Track B still runs Checkov separately rather than handing discovered Terraform to the shared parser and rules |
 | **Service coverage** | Eleven rules over eight resource types. Adding one is a rule function plus a line of CIS mapping. Not yet covered: Key Vault, VMs, Lambda, EC2 instances, KMS. |
 | **AWS-managed and inline IAM policies** | Only customer-managed policies are read today |
 | **Indirect public exposure** | CloudFront-fronted buckets and Azure `public_network_access` are recorded but no rule reads them yet |
@@ -356,3 +352,7 @@ Deliberately broken fixtures cover what the tests cannot. A **dirty** fixture ch
 | **GCP** | The canonical schema is provider-neutral; a GCP connector would need no rule changes |
 | **Drift detection** | Live and declared resources already share a shape; comparing them is the natural next module |
 | **Scheduled and multi-account scanning** | Scans are triggered manually. AWS Organizations and Azure management-group traversal are not implemented. |
+| **Production identity provider** | OIDC is supported in code; the local build runs the development sign-in gate |
+| **Scanner sandboxing** | Scanners and connectors run in-process on the dev box. In production each scanner should run in a throwaway container (`--network none`, read-only mount) and the worker pool should run in an isolated identity with no inbound access |
+| **Platform infrastructure as code** | Planned Terraform modules: network, data, compute (API and workers separated), identity, secrets, storage. The plan is also to scan the platform's own Terraform with the platform. |
+| **IaC join between the tracks** | `app/normalize/iac.py` exists, but Track B still runs Checkov separately rather than handing discovered Terraform to the shared parser and rules |
