@@ -23,7 +23,7 @@ rqworker.log
 rqworker.pid
 
 # Personal working notes and account-specific setup — local only.
-# The two READMEs are the published documentation; everything else here
+# README.md is the published documentation; everything else here
 # records this operator's own accounts, findings and build history.
 questions.md
 issues_&_fixes.md
